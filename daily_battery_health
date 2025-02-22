@@ -71,4 +71,4 @@ LEFT JOIN
     ON db.battery = bh.battery_id 
     AND db.date_day = bh.date_day
 ORDER BY 
-    db.date_day DESC;
+    db.date_day DESC
