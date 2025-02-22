@@ -1,0 +1,74 @@
+WITH daily_battery AS (
+    -- Generate a list of batteries and their operational dates
+    SELECT DISTINCT 
+        date_day,
+        rotable AS battery
+    FROM 
+        analytics.date_dimension
+    CROSS JOIN analytics.assets
+    WHERE 
+        model = 'Battery' 
+        AND date_day BETWEEN '2022-01-01' AND CURRENT_DATE()
+    ORDER BY 
+        date_day DESC
+),
+battery_history AS (
+    -- Extract battery usage and health metrics
+    SELECT 
+        date_day,
+        battery_id,
+        cumulative_flight_distance_m / 1000 AS cumulative_distance_km,
+        cumulative_flight_duration_s / 3600 AS cumulative_flight_duration_hrs,
+        cumulative_flights,
+        last_hub_id AS hub_id,
+        last_successful_estimate_timestamp,
+        state_of_health_frac,
+        total_capacity_estimate_ah
+    FROM 
+        analytics.daily_battery_usage
+    WHERE 
+        state_of_health_frac IS NOT NULL
+)
+-- Final Query: Battery Performance and Health Analysis
+SELECT 
+    db.date_day,
+    db.battery,
+    
+    -- Fill missing State of Health values using last valid reading
+    COALESCE(
+        bh.state_of_health_frac, 
+        LAST_VALUE(bh.state_of_health_frac IGNORE NULLS) OVER (
+            PARTITION BY db.battery 
+            ORDER BY db.date_day ASC 
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        )
+    ) AS battery_soh,
+
+    -- Fill missing capacity estimates using last valid reading
+    COALESCE(
+        bh.total_capacity_estimate_ah, 
+        LAST_VALUE(bh.total_capacity_estimate_ah IGNORE NULLS) OVER (
+            PARTITION BY db.battery 
+            ORDER BY db.date_day ASC 
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        )
+    ) AS capacity_estimate,
+
+    -- Fill missing last estimate timestamps using last valid reading
+    COALESCE(
+        bh.last_successful_estimate_timestamp, 
+        LAST_VALUE(bh.last_successful_estimate_timestamp IGNORE NULLS) OVER (
+            PARTITION BY db.battery 
+            ORDER BY db.date_day ASC 
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        )
+    ) AS last_estimate_date
+
+FROM 
+    daily_battery db
+LEFT JOIN 
+    battery_history bh 
+    ON db.battery = bh.battery_id 
+    AND db.date_day = bh.date_day
+ORDER BY 
+    db.date_day DESC;
