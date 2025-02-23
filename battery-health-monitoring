@@ -1,0 +1,148 @@
+WITH battery_health_history AS (
+    -- Extract historical battery health data and fill missing values
+    SELECT 
+        date_day,
+        battery_id,
+        cpu_id,
+        last_hub_id,
+        last_successful_estimate_timestamp,
+
+        -- Fill missing health values using the last known value
+        COALESCE(
+            state_of_health_frac,
+            LAST_VALUE(state_of_health_frac IGNORE NULLS) OVER (
+                PARTITION BY battery_id
+                ORDER BY date_day ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            )
+        ) AS health,
+        
+        -- Check if an estimate was received on a given day
+        last_successful_estimate_timestamp IS NOT NULL AS estimate_received
+    FROM 
+        analytics.battery_health_history
+    WHERE 
+        cpu_id IS NOT NULL
+),
+
+current_health AS (
+    -- Compute the latest battery health and label classification
+    SELECT 
+        bhh.date_day,
+        b.battery_id,
+        b.cpu_id,
+        b.last_hub_id AS hub_id,
+        h.hub_name AS hub,
+        b.total_capacity_estimate_ah,
+        b.total_flight_distance_m,
+        b.total_flight_duration_s,
+        b.total_flights,
+        b.contributing_estimates,
+
+        -- Determine current health only if there are at least 3 contributing estimates
+        CASE 
+            WHEN b.contributing_estimates >= 3 THEN bhh.health 
+            ELSE NULL 
+        END AS current_health,
+
+        bhh.estimate_received,
+
+        -- Assign health status label based on health value
+        CASE 
+            WHEN current_health IS NULL THEN NULL
+            WHEN bhh.health >= 0.97 THEN '●●●'
+            WHEN bhh.health >= 0.90 THEN '●●○'
+            WHEN bhh.health >= 0.80 THEN '●○○'
+            ELSE '○○○'
+        END AS current_label,
+
+        -- Retrieve previous health value
+        LEAD(bhh.health) OVER (
+            PARTITION BY b.battery_id
+            ORDER BY bhh.date_day DESC
+        ) AS previous_health,
+
+        -- Retrieve previous health label
+        LEAD(current_label) OVER (
+            PARTITION BY b.battery_id
+            ORDER BY bhh.date_day DESC
+        ) AS previous_label,
+
+        -- Detect label change
+        CASE 
+            WHEN bhh.estimate_received 
+            AND LEAD(current_label) OVER (
+                PARTITION BY b.battery_id
+                ORDER BY bhh.date_day DESC
+            ) IS NOT NULL 
+            THEN current_label <> LEAD(current_label) OVER (
+                PARTITION BY b.battery_id
+                ORDER BY bhh.date_day DESC
+            )
+            ELSE NULL
+        END AS label_changed,
+
+        -- Battery last recorded flight timestamp
+        b.last_flight_timestamp,
+
+        -- Days since the last estimate was received
+        DATEDIFF(DAY, b.last_successful_estimate_timestamp, CURRENT_DATE()) AS days_since_last_estimate_received,
+
+        -- Human-readable estimate age
+        CONCAT(
+            DATEDIFF(DAY, b.last_successful_estimate_timestamp, CURRENT_DATE()), 
+            ' days ago'
+        ) AS estimate_age,
+
+        -- Determine battery stock location category
+        CASE 
+            WHEN stock_location ILIKE '%Reserve%' THEN 'Reserved'
+            WHEN stock_location ILIKE '%Service%' THEN 'In Service'
+            WHEN stock_location ILIKE '%Depot%' THEN 'Battery Depot'
+            ELSE 'Other'
+        END AS location
+
+    FROM 
+        analytics.battery_inventory b
+    LEFT JOIN 
+        analytics.dim_hubs h ON h.hub_id = b.last_hub_id
+    LEFT JOIN 
+        battery_health_history bhh ON b.battery_id = bhh.battery_id
+    LEFT JOIN 
+        analytics.cpu_registry csp ON b.cpu_id = csp.cpu_id
+    WHERE 
+        b.status NOT IN ('Not in Service', 'Retired')
+        AND csp.date_removed IS NULL
+    QUALIFY 
+        -- Select the most recent entry per battery
+        ROW_NUMBER() OVER (
+            PARTITION BY b.battery_id
+            ORDER BY bhh.date_day DESC
+        ) = 1
+)
+
+-- Final Query: Battery Health Status & Lifecycle Data
+SELECT 
+    date_day,
+    battery_id,
+    cpu_id,
+    hub_id,
+    hub,
+    total_capacity_estimate_ah,
+    total_flight_distance_m,
+    total_flight_duration_s,
+    total_flights,
+    contributing_estimates,
+    current_health,
+    estimate_received,
+    current_label,
+    previous_label,
+    previous_health,
+    label_changed,
+    days_since_last_estimate_received,
+    last_flight_timestamp,
+    estimate_age,
+    location
+FROM 
+    current_health
+ORDER BY 
+    days_since_last_estimate_received ASC NULLS LAST
