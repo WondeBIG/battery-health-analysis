@@ -8,7 +8,7 @@ These queries are structured for scalability, performance optimization, and seam
 
 ## Queries Included
 
-## Battery Flight History & Health Trends
+## Daily Battery Health Monitoring & Health Trends (daily_battery_health)
 Objective: Track cumulative battery usage metrics and state of health (SoH) over time.
 
 ### Key Metrics:
@@ -18,7 +18,7 @@ Objective: Track cumulative battery usage metrics and state of health (SoH) over
 
 Use Case: Understanding battery performance degradation trends and predicting maintenance needs.
 
-## Battery Health Status & Label Classification
+## Battery Health Status & Label Classification (Battery-health-label)
 Objective: Assign battery health labels based on SoH and identify significant changes over time.
 
 ### Key Metrics:
